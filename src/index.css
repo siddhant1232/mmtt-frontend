@@ -5,7 +5,7 @@
 html, body, #root { height: 100%; margin: 0; font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; background: linear-gradient(180deg,#061022 0%, #071423 100%); color: #e6eef8; }
 
 /* ---------- App shell ---------- */
-.app-root { display:flex; flex-direction:column; height:100vh; width:100%; position:relative; overflow:hidden; }
+.app-root { display:flex; flex-direction:column; height:100vh; width:100%; position:relative; /* allow overflow for map */ overflow: visible; }
 .hero-glow { position:absolute; inset:-30%; background: radial-gradient(circle at 10% 10%, rgba(255,140,0,0.04), transparent 8%), radial-gradient(circle at 90% 80%, rgba(99,102,241,0.03), transparent 12%); z-index:0; pointer-events:none; }
 
 /* ---------- Header ---------- */
@@ -15,6 +15,8 @@ html, body, #root { height: 100%; margin: 0; font-family: Inter, system-ui, -app
   background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
   border-bottom: 1px solid rgba(255,255,255,0.02);
   backdrop-filter: blur(6px);
+  position: sticky;
+  top: 0;
 }
 .bsf-title { display:flex; align-items:center; gap:14px; }
 .bsf-badge { background: linear-gradient(135deg,#ff8c00,#ffbd4a); color:#071224; font-weight:700; padding:6px 8px; border-radius:8px; font-size:12px; }
@@ -35,24 +37,94 @@ html, body, #root { height: 100%; margin: 0; font-family: Inter, system-ui, -app
 .status-dot.online { background:#22c55e; }
 
 /* ---------- Layout ---------- */
-.layout { display:flex; gap:16px; height: calc(100vh - 64px); position:relative; z-index:1; }
-.layout.desktop-layout { flex-direction:row; }
-.layout.mobile-layout { flex-direction:column-reverse; }
-
-/* ---------- Drawer backdrop (mobile) ---------- */
-.drawer-backdrop {
-  position: fixed;
-  inset: 64px 0 0 0;
-  background: rgba(2,6,23,0.45);
-  z-index: 30;
-  backdrop-filter: blur(2px);
+/* keep layout full height below header (header is 64px tall) */
+.layout {
+  display:flex;
+  gap:16px;
+  height: calc(100vh - 64px);
+  position:relative;
+  z-index:1;
+  flex-direction: column; /* default column so map can be on top */
+  overflow: auto;
 }
+
+/* Desktop: two-column where map stays on top area and panels below or aside */
+.layout.desktop-layout { flex-direction: row; }
+
+/* Mobile: keep controls below map */
+.layout.mobile-layout { flex-direction: column; }
+
+/* ---------- Map shell (NEW / fixed) ---------- */
+/* This ensures the map sits visually above control panel and is sticky under the header */
+.map-shell {
+  order: -1;                    /* ensures map sits above control panel in visual flow */
+  position: sticky;             /* stays at top while scrolling */
+  top: 64px;                    /* sit just below header */
+  z-index: 50;                  /* above page content but below header */
+  width: 100%;
+  height: 50vh;                 /* desktop default */
+  min-height: 260px;
+  max-height: 75vh;
+  overflow: visible;         /* prevent map tiles from being clipped */
+  border-radius: 12px;
+  margin: 12px 12px 6px 12px;
+  box-shadow: 0 10px 30px rgba(3,7,18,0.6);
+  background: linear-gradient(180deg, rgba(255,255,255,0.01), rgba(255,255,255,0.00));
+}
+
+/* mobile: map fills remaining viewport under header */
+.map-shell.map-full {
+  height: calc(100vh - 64px);
+  min-height: 360px;
+  max-height: none;
+  margin: 0;
+  border-radius: 0;
+}
+
+/* map canvas inside the shell should fill it */
+.map-shell .map-canvas,
+.map-shell .leaflet-container,
+.map-shell .mapboxgl-map {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 12px;
+  /* create a separate compositing layer for smoother rendering */
+  will-change: transform;
+}
+
+/* overlay pills */
+.map-overlay-top {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  display: flex;
+  gap: 8px;
+  z-index: 55;
+  pointer-events: none;
+}
+.map-pill {
+  pointer-events: auto;
+  background: rgba(6,10,18,0.6);
+  padding: 6px 10px;
+  border-radius: 999px;
+  backdrop-filter: blur(6px);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #e6eef8;
+}
+.map-pill.subtle { background: rgba(255,255,255,0.02); color: rgba(230,238,248,0.95); }
 
 /* ---------- Control panel ---------- */
 .control-panel {
+  order: 0;
   width: 320px; min-width: 260px; max-width: 36%;
   transition: transform 0.22s ease, opacity 0.22s ease;
   z-index: 35; display:flex; flex-direction:column; padding:10px;
+  margin: 12px;
 }
 .panel-scroll {
   background: linear-gradient(180deg, rgba(255,255,255,0.015), rgba(255,255,255,0.01));
@@ -80,4 +152,37 @@ html, body, #root { height: 100%; margin: 0; font-family: Inter, system-ui, -app
 /* error box */
 .error-box { color:#ffb4a2; background: rgba(255,80,80,0.04); padding:8px; border-radius:8px; }
 
-/* ---------- Map shell ---------- */
+/* ---------- Drawer backdrop (mobile) ---------- */
+.drawer-backdrop {
+  position: fixed;
+  inset: 64px 0 0 0;
+  background: rgba(2,6,23,0.45);
+  z-index: 30;
+  backdrop-filter: blur(2px);
+}
+
+/* If you do want the control panel to overlay the map on small screens */
+.control-panel.overlay-on-map {
+  position: absolute;
+  top: calc(64px + 18px); /* header height + small offset */
+  right: 16px;
+  z-index: 40;
+  max-width: 320px;
+}
+
+/* small helper for full-height content below map */
+.content-below-map {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: 12px;
+}
+
+/* toast */
+.toast { position: fixed; right: 20px; bottom: 24px; z-index: 80; padding: 8px 12px; border-radius: 8px; background: rgba(0,0,0,0.6); color: #e6eef8; }
+.toast-success { background: linear-gradient(90deg,#22c55e,#16a34a); color:#071224; font-weight:600; }
+
+/* small responsive niceties */
+@media (max-width: 768px) {
+  .control-panel { width: 100%; max-width: none; min-width: 0; margin: 0; padding: 10px; }
+  .map-overlay-top { left: 8px; top: 8px; }
+}

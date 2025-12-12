@@ -1,5 +1,5 @@
 // src/App.jsx
-import { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   MapContainer,
   TileLayer,
@@ -117,7 +117,7 @@ function cleanAndSortHistory(history, opts = {}) {
   return cleaned;
 }
 
-// ---------------------- Leaflet icon fix (larger marker) ----------------------
+// ---------------------- Leaflet icon fix (larger marker) ------------------
 
 // Use scaled-up default marker icons so the pin is visible on large map
 delete Icon.Default.prototype._getIconUrl;
@@ -224,6 +224,8 @@ function App() {
   const [toastMessage, setToastMessage] = useState(null);
   const toastTimerRef = useRef(null);
   const mountedRef = useRef(true);
+
+  const mapRef = useRef(null);
 
   useEffect(() => {
     function onResize() {
@@ -356,6 +358,20 @@ function App() {
     console.debug('[DEBUG] history (count):', history.length);
   }, [latestLocation, history]);
 
+  // Call invalidateSize when layout-affecting state changes
+  useEffect(() => {
+    const m = mapRef.current;
+    if (!m) return;
+    const t = setTimeout(() => {
+      try {
+        m.invalidateSize?.();
+      } catch (e) {
+        console.warn('map invalidate failed', e);
+      }
+    }, 80);
+    return () => clearTimeout(t);
+  }, [isMobile, drawerOpen, mapStyle, deviceId]);
+
   const lastUpdateEpoch = useMemo(() => {
     if (latestLocation && (latestLocation.timestamp || latestLocation.timestamp === 0)) {
       return latestLocation.timestamp;
@@ -414,7 +430,7 @@ function App() {
   const HEADER_HEIGHT = 64;
   const mapContainerStyle = isMobile
     ? { height: `calc(100vh - ${HEADER_HEIGHT}px)`, width: '100%' }
-    : { height: '100%', width: '100%' };
+    : { height: '100%', width: '100%' }; // .map-shell handles desktop height
 
   return (
     <div className={`app-root ${isMobile ? 'mobile' : 'desktop'}`}>
@@ -456,6 +472,7 @@ function App() {
         {/* Backdrop for drawer (mobile) */}
         {isMobile && drawerOpen && <div className="drawer-backdrop" onClick={() => setDrawerOpen(false)} />}
 
+        {/* Control panel remains in DOM order after map (map is visually first via CSS order), but you can move places if you prefer */}
         <aside
           className={`control-panel drawer ${isMobile ? 'mobile-drawer' : ''} ${drawerOpen ? 'drawer-open' : ''}`}
           aria-hidden={!drawerOpen && isMobile}
@@ -596,7 +613,18 @@ function App() {
             )}
           </div>
 
-          <MapContainer center={mapCenter} zoom={13} zoomControl={true} style={mapContainerStyle}>
+          <MapContainer
+            whenCreated={(m) => {
+              mapRef.current = m;
+              // slight delay to allow layout/paint, then make leaflet recompute sizes
+              setTimeout(() => m.invalidateSize?.(), 60);
+            }}
+            center={mapCenter}
+            zoom={13}
+            zoomControl={true}
+            style={mapContainerStyle}
+            id="leaflet-main-map"
+          >
             <TileLayer attribution="&copy; OpenStreetMap contributors" url={tileUrl} />
 
             <ScaleControl position="bottomleft" />
