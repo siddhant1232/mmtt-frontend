@@ -31,10 +31,8 @@ const formatHHMMSS = (epochSeconds) => {
 
 // ---------------------- localStorage + cleaning helpers ----------
 
-// localStorage key per device
 const localHistoryKey = (deviceId) => `track_history_${deviceId}`;
 
-// Save normalized history to localStorage (array of {lat, lon, ts})
 function saveLocalHistory(deviceId, arr) {
   try {
     if (!deviceId) return;
@@ -45,7 +43,6 @@ function saveLocalHistory(deviceId, arr) {
   }
 }
 
-// Load history from localStorage (returns array or [])
 function loadLocalHistory(deviceId) {
   try {
     if (!deviceId) return [];
@@ -60,24 +57,16 @@ function loadLocalHistory(deviceId) {
   }
 }
 
-/**
- * cleanAndSortHistory(history)
- * - Removes points with no/invalid ts
- * - Filters NaN lat/lon
- * - Removes huge jumps (spikes) using a distance threshold (default 200 km)
- * - Sorts by ts ascending
- */
 function cleanAndSortHistory(history, opts = {}) {
   if (!Array.isArray(history)) return [];
   const {
-    minYear = 2009, // timestamps before this year are suspicious
-    jumpKmThreshold = 200, // remove isolated jumps bigger than this (200 km)
-    maxFutureSec = 24 * 3600, // allow timestamps up to 24h in future
+    minYear = 2009,
+    jumpKmThreshold = 200,
+    maxFutureSec = 24 * 3600,
   } = opts;
 
   const nowSec = Math.floor(Date.now() / 1000);
 
-  // filter valid coordinates and parse ts as number
   const normalized = history
     .map((p) => ({
       lat: Number(p.lat),
@@ -86,24 +75,19 @@ function cleanAndSortHistory(history, opts = {}) {
     }))
     .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon));
 
-  // remove invalid timestamps
   const withValidTs = normalized.filter((p) => {
     if (p.ts == null) return false;
-    // sensible range
     if (p.ts < minYear * 365 * 24 * 3600) return false;
     if (p.ts > nowSec + maxFutureSec) return false;
     return true;
   });
 
-  // sort by ts ascending
   withValidTs.sort((a, b) => a.ts - b.ts);
 
-  // remove huge isolated jumps: keep a running cleaned array
   const cleaned = [];
   const earthKm = (lat1, lon1, lat2, lon2) => {
-    // haversine
     const toRad = (v) => (v * Math.PI) / 180;
-    const R = 6371; // km
+    const R = 6371;
     const dLat = toRad(lat2 - lat1);
     const dLon = toRad(lon2 - lon1);
     const a =
@@ -120,11 +104,9 @@ function cleanAndSortHistory(history, opts = {}) {
     } else {
       const prev = cleaned[cleaned.length - 1];
       const km = earthKm(prev.lat, prev.lon, p.lat, p.lon);
-      const dt = p.ts - prev.ts; // seconds
-      // if jump is huge but dt is very small, it's suspicious
+      const dt = p.ts - prev.ts;
       if (km > jumpKmThreshold && dt < 60) {
         console.warn('[CLEAN] Dropping spike point', { prev, p, km, dt });
-        // skip p
         continue;
       }
       cleaned.push(p);
@@ -135,23 +117,28 @@ function cleanAndSortHistory(history, opts = {}) {
   return cleaned;
 }
 
-// ---------------------- Leaflet icon fix ----------------------
+// ---------------------- Leaflet icon fix (larger marker) ----------------------
 
-// Fix for default marker icon in React-Leaflet
+// Use scaled-up default marker icons so the pin is visible on large map
 delete Icon.Default.prototype._getIconUrl;
+const markerIconUrl = 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png';
+const markerIconRetinaUrl = 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png';
+const markerShadowUrl = 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png';
 Icon.Default.mergeOptions({
-  iconRetinaUrl:
-    'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
-  iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
-  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+  iconRetinaUrl: markerIconRetinaUrl,
+  iconUrl: markerIconUrl,
+  shadowUrl: markerShadowUrl,
+  iconSize: [34, 48], // a touch bigger
+  iconAnchor: [17, 48],
+  popupAnchor: [0, -52],
+  shadowSize: [50, 50],
 });
 
 // ---------------------- Helper Components ----------------------
 
-// Small helper component to recenter map when target moves — now pans smoothly
+// Smooth recentering
 function RecenterOnTarget({ lat, lon }) {
   const map = useMap();
-
   useEffect(() => {
     if (lat || lat === 0) {
       try {
@@ -160,17 +147,10 @@ function RecenterOnTarget({ lat, lon }) {
         map.setView([lat, lon]);
       }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lat, lon]);
-
+  }, [lat, lon, map]);
   return null;
 }
 
-/**
- * SmoothMarker
- * - Interpolates marker position using requestAnimationFrame when coordinates update.
- * - This creates smooth micro-movements for tiny GPS changes.
- */
 function SmoothMarker({ position, children }) {
   const markerRef = useRef({ lat: position[0], lon: position[1] });
   const animRef = useRef(null);
@@ -179,25 +159,21 @@ function SmoothMarker({ position, children }) {
   useEffect(() => {
     const from = { ...markerRef.current };
     const to = { lat: position[0], lon: position[1] };
-
-    // If no movement, do nothing
     if (from.lat === to.lat && from.lon === to.lon) return;
 
-    const duration = 700; // milliseconds for the interpolation
+    const duration = 700;
     const start = performance.now();
 
     cancelAnimationFrame(animRef.current);
 
     function step(now) {
       const t = Math.min(1, (now - start) / duration);
-      // ease in-out cubic
       const ease = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
       const lat = from.lat + (to.lat - from.lat) * ease;
       const lon = from.lon + (to.lon - from.lon) * ease;
 
       markerRef.current = { lat, lon };
 
-      // update leaflet marker position directly to avoid re-render
       if (leafletRef.current && leafletRef.current.setLatLng) {
         leafletRef.current.setLatLng([lat, lon]);
       }
@@ -212,7 +188,6 @@ function SmoothMarker({ position, children }) {
     return () => cancelAnimationFrame(animRef.current);
   }, [position]);
 
-  // initial render - position taken from markerRef so small changes animate
   return (
     <Marker
       position={[markerRef.current.lat, markerRef.current.lon]}
@@ -238,39 +213,34 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [refreshInterval, setRefreshInterval] = useState(5000); // 5 seconds
+  const [refreshInterval, setRefreshInterval] = useState(5000);
   const [followTarget, setFollowTarget] = useState(true);
   const [showPath, setShowPath] = useState(true);
   const [mapStyle, setMapStyle] = useState('standard');
 
-  // responsive UI state
   const [isMobile, setIsMobile] = useState(typeof window !== 'undefined' ? window.innerWidth <= MOBILE_BREAKPOINT : false);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   const [toastMessage, setToastMessage] = useState(null);
   const toastTimerRef = useRef(null);
-
   const mountedRef = useRef(true);
 
-  // update isMobile on resize
   useEffect(() => {
     function onResize() {
       const mobile = window.innerWidth <= MOBILE_BREAKPOINT;
       setIsMobile(mobile);
-      if (!mobile) setDrawerOpen(false); // close drawer when switching to desktop
+      if (!mobile) setDrawerOpen(false);
     }
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, []);
 
-  // Fetch data function — clears previous data immediately to avoid stale visuals
   const loadData = async () => {
     if (!deviceId.trim()) {
       setError('Please enter a device ID');
       return;
     }
 
-    // Clear previous data right away so UI removes old points while fetching
     setLatestLocation(null);
     setHistory([]);
     setError(null);
@@ -282,10 +252,6 @@ function App() {
         fetchHistory(deviceId),
       ]);
 
-      console.debug('[LOAD] fetched latest:', latest);
-      console.debug('[LOAD] fetched history count (raw):', Array.isArray(historyData) ? historyData.length : '(not array)');
-
-      // Normalize latest
       if (latest) {
         const normalizedLatest = {
           device_id: latest.device_id ?? deviceId,
@@ -301,7 +267,6 @@ function App() {
         setLatestLocation(null);
       }
 
-      // Normalize history: array of {lat, lon, ts}
       let normalizedHistory = [];
       if (Array.isArray(historyData) && historyData.length > 0) {
         normalizedHistory = historyData.map((p) => ({
@@ -310,23 +275,17 @@ function App() {
           ts: p.ts ?? p.timestamp ?? null,
         }));
       } else {
-        // API returned empty -> try localStorage fallback
         const fromLS = loadLocalHistory(deviceId);
         if (fromLS && fromLS.length > 0) {
-          console.log('[LOAD] Using localStorage fallback', fromLS.length);
           normalizedHistory = fromLS;
         } else {
           normalizedHistory = [];
         }
       }
 
-      // Clean + sort the history (removes invalid ts and spikes)
       const cleaned = cleanAndSortHistory(normalizedHistory);
-
-      // Persist cleaned history to localStorage for future runs
       if (cleaned.length > 0) saveLocalHistory(deviceId, cleaned);
 
-      // If server didn't provide latest but we do have cleaned history, use last point as latest
       if (!latest && cleaned.length > 0) {
         const last = cleaned[cleaned.length - 1];
         const lastNormalized = {
@@ -341,12 +300,10 @@ function App() {
         setLatestLocation(lastNormalized);
       }
 
-      // update state with cleaned history
       setHistory(cleaned);
     } catch (err) {
       setError(`Failed to load data: ${err?.message ?? err}`);
       console.error(err);
-      // keep cleared state on error
       setLatestLocation(null);
       setHistory([]);
     } finally {
@@ -354,21 +311,17 @@ function App() {
     }
   };
 
-  // Clears frontend-only data (does NOT hit backend)
   const clearLocalData = () => {
     setLatestLocation(null);
     setHistory([]);
     setError(null);
 
-    // remove stored local history for this device
     try {
       localStorage.removeItem(localHistoryKey(deviceId));
-      console.log('[LS] removed history for', deviceId);
     } catch (e) {
       console.warn('[LS] remove error', e);
     }
 
-    // toast: transient cleared message
     if (toastTimerRef.current) {
       clearTimeout(toastTimerRef.current);
       toastTimerRef.current = null;
@@ -379,11 +332,9 @@ function App() {
     }, 1500);
   };
 
-  // Initial load
   useEffect(() => {
     mountedRef.current = true;
     loadData();
-
     return () => {
       mountedRef.current = false;
       if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
@@ -391,28 +342,20 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Auto-refresh effect
   useEffect(() => {
     if (!autoRefresh) return;
-
     const interval = setInterval(() => {
       loadData();
     }, refreshInterval);
-
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoRefresh, refreshInterval, deviceId]);
 
-  // ------ Debug: show raw payloads so we can inspect in console ------
   useEffect(() => {
     console.debug('[DEBUG] latestLocation:', latestLocation);
     console.debug('[DEBUG] history (count):', history.length);
-    if (history.length > 0) {
-      console.debug('[DEBUG] history first:', history[0], 'last:', history[history.length - 1]);
-    }
   }, [latestLocation, history]);
 
-  // Determine lastUpdateEpoch: prefer latestLocation.timestamp, then last history ts
   const lastUpdateEpoch = useMemo(() => {
     if (latestLocation && (latestLocation.timestamp || latestLocation.timestamp === 0)) {
       return latestLocation.timestamp;
@@ -429,14 +372,12 @@ function App() {
     return formatHHMMSS(lastUpdateEpoch);
   }, [lastUpdateEpoch]);
 
-  // Points: if history has points use that, otherwise if we have a latest point, show 1 (single point)
   const pointsCount = useMemo(() => {
     if (Array.isArray(history) && history.length > 0) return history.length;
     if (latestLocation) return 1;
     return 0;
   }, [history, latestLocation]);
 
-  // Path distance: same algorithm but robust to empty history
   const pathDistance = useMemo(() => {
     if (!Array.isArray(history) || history.length < 2) return 0;
     let total = 0;
@@ -446,45 +387,40 @@ function App() {
       if (!a || !b) continue;
       const dx = b.lat - a.lat;
       const dy = b.lon - a.lon;
-      total += Math.sqrt(dx * dx + dy * dy) * 111; // rough km scale
+      total += Math.sqrt(dx * dx + dy * dy) * 111;
     }
     return total;
   }, [history]);
 
-  // Recent trail (unchanged) — last 6 points reversed for UI
   const recentTrail = useMemo(() => {
     if (!Array.isArray(history) || history.length === 0) return [];
     return history.slice(-6).reverse();
   }, [history]);
 
-  // Prepare polyline coordinates
   const polylineCoordinates = history.map((point) => [point.lat, point.lon]);
 
-  // Calculate map center
-  const fallbackCenter = [29.866, 77.8905]; // Roorkee-ish default
+  const fallbackCenter = [29.866, 77.8905];
   const mapCenter = latestLocation
     ? [latestLocation.lat, latestLocation.lon]
     : history.length > 0
     ? [history[history.length - 1].lat, history[history.length - 1].lon]
     : fallbackCenter;
 
-  // Choose tile style
   const tileUrl =
     mapStyle === 'standard'
       ? 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png'
       : 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
 
-  // Map container style: mobile uses full viewport height minus header
+  const HEADER_HEIGHT = 64;
   const mapContainerStyle = isMobile
-    ? { height: 'calc(100vh - 64px)', width: '100%' } // header assumed 64px
+    ? { height: `calc(100vh - ${HEADER_HEIGHT}px)`, width: '100%' }
     : { height: '100%', width: '100%' };
 
   return (
     <div className={`app-root ${isMobile ? 'mobile' : 'desktop'}`}>
       <div className="hero-glow" />
 
-      {/* Top BSF header */}
-      <header className="bsf-header">
+      <header className="bsf-header" style={{ height: HEADER_HEIGHT }}>
         <div className="bsf-title">
           <span className="bsf-badge">BSF</span>
           <div>
@@ -500,7 +436,6 @@ function App() {
               aria-label="Open controls"
               onClick={() => setDrawerOpen((v) => !v)}
             >
-              {/* simple hamburger */}
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden>
                 <path d="M3 6h18M3 12h18M3 18h18" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
               </svg>
@@ -517,18 +452,21 @@ function App() {
         </div>
       </header>
 
-      <div className="layout">
-        {/* Left control panel (desktop: column left, mobile: drawer) */}
-        <aside className={`control-panel drawer ${isMobile ? 'mobile-drawer' : ''} ${drawerOpen ? 'drawer-open' : ''}`} aria-hidden={!drawerOpen && isMobile}>
+      <div className={`layout ${isMobile ? 'mobile-layout' : 'desktop-layout'}`}>
+        {/* Backdrop for drawer (mobile) */}
+        {isMobile && drawerOpen && <div className="drawer-backdrop" onClick={() => setDrawerOpen(false)} />}
+
+        <aside
+          className={`control-panel drawer ${isMobile ? 'mobile-drawer' : ''} ${drawerOpen ? 'drawer-open' : ''}`}
+          aria-hidden={!drawerOpen && isMobile}
+        >
           <div className="panel-scroll">
             <div className="panel-section glass">
               <div className="panel-head">
                 <h2>Target Control</h2>
                 <div className="chip">Live</div>
               </div>
-              <label htmlFor="deviceId" className="field-label">
-                Device ID
-              </label>
+              <label htmlFor="deviceId" className="field-label">Device ID</label>
               <div className="device-row">
                 <input
                   id="deviceId"
@@ -536,7 +474,6 @@ function App() {
                   value={deviceId}
                   onChange={(e) => {
                     setDeviceId(e.target.value);
-                    // clear previous points immediately when device changes
                     setLatestLocation(null);
                     setHistory([]);
                   }}
@@ -606,9 +543,7 @@ function App() {
                 <div className="info-grid">
                   <div>
                     <span className="label">Location</span>
-                    <span>
-                      {latestLocation.lat.toFixed(6)}, {latestLocation.lon.toFixed(6)}
-                    </span>
+                    <span>{latestLocation.lat.toFixed(6)}, {latestLocation.lon.toFixed(6)}</span>
                   </div>
                   {latestLocation.speed !== null && (
                     <div>
@@ -638,9 +573,7 @@ function App() {
                 <div key={`${p.lat}-${p.lon}-${idx}`} className="trail-row">
                   <span className="dot" />
                   <div>
-                    <div className="coords">
-                      {p.lat.toFixed(5)}, {p.lon.toFixed(5)}
-                    </div>
+                    <div className="coords">{p.lat.toFixed(5)}, {p.lon.toFixed(5)}</div>
                     <small>{p.ts ? formatHHMMSS(p.ts) : '--:--:--'}</small>
                   </div>
                 </div>
@@ -651,16 +584,14 @@ function App() {
           </div>
         </aside>
 
-        {/* Map area */}
-        <main className={`map-shell glass ${isMobile ? 'map-full' : ''}`}>
+        <main className={`map-shell glass ${isMobile ? 'map-full' : ''}`} key={`${deviceId}-${mapStyle}`}>
           <div className="map-overlay-top">
             <div className="map-pill">
               <span className="pulse-dot" /> Live ops map
             </div>
             {latestLocation && (
               <div className="map-pill subtle">
-                <strong>{latestLocation.device_id}</strong> · {latestLocation.lat.toFixed(4)},{' '}
-                {latestLocation.lon.toFixed(4)}
+                <strong>{latestLocation.device_id}</strong> · {latestLocation.lat.toFixed(4)}, {latestLocation.lon.toFixed(4)}
               </div>
             )}
           </div>
@@ -670,26 +601,23 @@ function App() {
 
             <ScaleControl position="bottomleft" />
 
-            {/* Auto-recenter when following target */}
             {followTarget && latestLocation && <RecenterOnTarget lat={latestLocation.lat} lon={latestLocation.lon} />}
 
-            {/* Historical path polyline */}
             {showPath && polylineCoordinates.length > 1 && (
               <Polyline
                 positions={polylineCoordinates}
                 pathOptions={{
                   color: '#ff8c00',
                   weight: 4,
-                  opacity: 0.85,
+                  opacity: 0.9,
                   smoothFactor: 1.5,
                 }}
               />
             )}
 
-            {/* Latest location marker (smooth) */}
             {latestLocation && (
               <SmoothMarker position={[latestLocation.lat, latestLocation.lon]}>
-                <Popup>
+                <Popup className="custom-popup">
                   <div className="popup-content">
                     <strong>{latestLocation.device_id}</strong>
                     <br />
@@ -721,7 +649,6 @@ function App() {
               </SmoothMarker>
             )}
 
-            {/* SOS overlay card */}
             {latestLocation && latestLocation.sos && (
               <div className="sos-floating-card" aria-hidden>
                 <div className="sos-inner">
@@ -738,7 +665,6 @@ function App() {
         </main>
       </div>
 
-      {/* Toast / transient messages */}
       {toastMessage && (
         <div className="toast toast-success" aria-live="polite">
           {toastMessage}
