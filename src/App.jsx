@@ -14,8 +14,8 @@ import { fetchLatestLocation, fetchHistory } from './api/trackingapp.js';
 import './App.css';
 import 'leaflet/dist/leaflet.css';
 
-// Base URL fallback (used for server time HEAD request if needed)
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://mmtt-web.onrender.com';
+// ---------------------- Responsive helpers ----------------------
+const MOBILE_BREAKPOINT = 768; // px
 
 // ---------------------- Helpers ----------------------
 
@@ -27,17 +27,6 @@ const formatHHMMSS = (epochSeconds) => {
   const mm = String(d.getMinutes()).padStart(2, '0');
   const ss = String(d.getSeconds()).padStart(2, '0');
   return `${hh}:${mm}:${ss}`;
-};
-
-// Optional human readable with timezone (kept for other places if needed)
-const formatServerTimeLong = (epochSeconds) => {
-  if (!epochSeconds && epochSeconds !== 0) return null;
-  const dt = new Date(epochSeconds * 1000);
-  return new Intl.DateTimeFormat('en-IN', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-    timeZone: 'Asia/Kolkata',
-  }).format(dt);
 };
 
 // ---------------------- localStorage + cleaning helpers ----------
@@ -144,20 +133,6 @@ function cleanAndSortHistory(history, opts = {}) {
 
   console.log('[CLEAN] before:', history.length, 'after:', cleaned.length);
   return cleaned;
-}
-
-// Optional helper to append a point client-side and persist
-function appendPointToLocal(deviceId, point) {
-  try {
-    const existing = loadLocalHistory(deviceId);
-    existing.push(point);
-    const cleaned = cleanAndSortHistory(existing);
-    saveLocalHistory(deviceId, cleaned);
-    return cleaned;
-  } catch (e) {
-    console.warn('[LS] append error', e);
-    return [];
-  }
 }
 
 // ---------------------- Leaflet icon fix ----------------------
@@ -268,10 +243,25 @@ function App() {
   const [showPath, setShowPath] = useState(true);
   const [mapStyle, setMapStyle] = useState('standard');
 
+  // responsive UI state
+  const [isMobile, setIsMobile] = useState(typeof window !== 'undefined' ? window.innerWidth <= MOBILE_BREAKPOINT : false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+
   const [toastMessage, setToastMessage] = useState(null);
   const toastTimerRef = useRef(null);
 
   const mountedRef = useRef(true);
+
+  // update isMobile on resize
+  useEffect(() => {
+    function onResize() {
+      const mobile = window.innerWidth <= MOBILE_BREAKPOINT;
+      setIsMobile(mobile);
+      if (!mobile) setDrawerOpen(false); // close drawer when switching to desktop
+    }
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
 
   // Fetch data function — clears previous data immediately to avoid stale visuals
   const loadData = async () => {
@@ -291,6 +281,9 @@ function App() {
         fetchLatestLocation(deviceId),
         fetchHistory(deviceId),
       ]);
+
+      console.debug('[LOAD] fetched latest:', latest);
+      console.debug('[LOAD] fetched history count (raw):', Array.isArray(historyData) ? historyData.length : '(not array)');
 
       // Normalize latest
       if (latest) {
@@ -410,6 +403,60 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoRefresh, refreshInterval, deviceId]);
 
+  // ------ Debug: show raw payloads so we can inspect in console ------
+  useEffect(() => {
+    console.debug('[DEBUG] latestLocation:', latestLocation);
+    console.debug('[DEBUG] history (count):', history.length);
+    if (history.length > 0) {
+      console.debug('[DEBUG] history first:', history[0], 'last:', history[history.length - 1]);
+    }
+  }, [latestLocation, history]);
+
+  // Determine lastUpdateEpoch: prefer latestLocation.timestamp, then last history ts
+  const lastUpdateEpoch = useMemo(() => {
+    if (latestLocation && (latestLocation.timestamp || latestLocation.timestamp === 0)) {
+      return latestLocation.timestamp;
+    }
+    if (history && history.length > 0) {
+      const last = history[history.length - 1];
+      return last.ts ?? null;
+    }
+    return null;
+  }, [latestLocation, history]);
+
+  const lastUpdate = useMemo(() => {
+    if (lastUpdateEpoch == null) return null;
+    return formatHHMMSS(lastUpdateEpoch);
+  }, [lastUpdateEpoch]);
+
+  // Points: if history has points use that, otherwise if we have a latest point, show 1 (single point)
+  const pointsCount = useMemo(() => {
+    if (Array.isArray(history) && history.length > 0) return history.length;
+    if (latestLocation) return 1;
+    return 0;
+  }, [history, latestLocation]);
+
+  // Path distance: same algorithm but robust to empty history
+  const pathDistance = useMemo(() => {
+    if (!Array.isArray(history) || history.length < 2) return 0;
+    let total = 0;
+    for (let i = 1; i < history.length; i += 1) {
+      const a = history[i - 1];
+      const b = history[i];
+      if (!a || !b) continue;
+      const dx = b.lat - a.lat;
+      const dy = b.lon - a.lon;
+      total += Math.sqrt(dx * dx + dy * dy) * 111; // rough km scale
+    }
+    return total;
+  }, [history]);
+
+  // Recent trail (unchanged) — last 6 points reversed for UI
+  const recentTrail = useMemo(() => {
+    if (!Array.isArray(history) || history.length === 0) return [];
+    return history.slice(-6).reverse();
+  }, [history]);
+
   // Prepare polyline coordinates
   const polylineCoordinates = history.map((point) => [point.lat, point.lon]);
 
@@ -427,29 +474,13 @@ function App() {
       ? 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png'
       : 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
 
-  // Last update HH:MM:SS (uses latestLocation.timestamp)
-  const lastUpdate = useMemo(() => {
-    if (!latestLocation || latestLocation.timestamp == null) return null;
-    return formatHHMMSS(latestLocation.timestamp);
-  }, [latestLocation]);
-
-  const pathDistance = useMemo(() => {
-    // quick-and-light distance approximation for the small hackathon demo
-    let total = 0;
-    for (let i = 1; i < history.length; i += 1) {
-      const a = history[i - 1];
-      const b = history[i];
-      const dx = b.lat - a.lat;
-      const dy = b.lon - a.lon;
-      total += Math.sqrt(dx * dx + dy * dy) * 111; // rough km scale
-    }
-    return total;
-  }, [history]);
-
-  const recentTrail = useMemo(() => history.slice(-6).reverse(), [history]);
+  // Map container style: mobile uses full viewport height minus header
+  const mapContainerStyle = isMobile
+    ? { height: 'calc(100vh - 64px)', width: '100%' } // header assumed 64px
+    : { height: '100%', width: '100%' };
 
   return (
-    <div className="app-root">
+    <div className={`app-root ${isMobile ? 'mobile' : 'desktop'}`}>
       <div className="hero-glow" />
 
       {/* Top BSF header */}
@@ -463,7 +494,19 @@ function App() {
         </div>
 
         <div className="bsf-actions">
-          <div className="chip ghost">Render-ready</div>
+          {isMobile && (
+            <button
+              className="mobile-toggle"
+              aria-label="Open controls"
+              onClick={() => setDrawerOpen((v) => !v)}
+            >
+              {/* simple hamburger */}
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden>
+                <path d="M3 6h18M3 12h18M3 18h18" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+              </svg>
+            </button>
+          )}
+
           <div className="chip success">
             <span className="status-dot online" />
             Backend online
@@ -474,174 +517,142 @@ function App() {
         </div>
       </header>
 
-      {/* Top stats ribbon */}
-      <section className="ribbon">
-        <div className="stat-card">
-          <span className="label">Tracking</span>
-          <strong>{latestLocation ? latestLocation.device_id : '—'}</strong>
-          <small>Device ID</small>
-        </div>
-        <div className="stat-card">
-          <span className="label">Points</span>
-          <strong>{history.length}</strong>
-          <small>Track samples</small>
-        </div>
-        <div className="stat-card">
-          <span className="label">Path length</span>
-          <strong>{pathDistance.toFixed(2)} km</strong>
-          <small>Approx. ground distance</small>
-        </div>
-        <div className="stat-card">
-          <span className="label">Last update</span>
-          <strong>{lastUpdate || 'Waiting…'}</strong>
-          <small>HH:MM:SS</small>
-        </div>
-      </section>
-
       <div className="layout">
-        {/* Left control panel */}
-        <aside className="control-panel">
-          <div className="panel-section glass">
-            <div className="panel-head">
-              <h2>Target Control</h2>
-              <div className="chip">Live</div>
-            </div>
-            <label htmlFor="deviceId" className="field-label">
-              Device ID
-            </label>
-            <div className="device-row">
-              <input
-                id="deviceId"
-                type="text"
-                value={deviceId}
-                onChange={(e) => {
-                  setDeviceId(e.target.value);
-                  // clear previous points immediately when device changes
-                  setLatestLocation(null);
-                  setHistory([]);
-                }}
-                placeholder="esp01"
-              />
-              <div style={{ display: 'flex', gap: 8 }}>
-                <button className="btn primary" onClick={loadData} disabled={loading}>
-                  {loading ? 'Loading…' : 'Refresh'}
-                </button>
-                <button
-                  className="btn outline"
-                  onClick={clearLocalData}
-                  disabled={loading && !latestLocation && history.length === 0}
-                  title="Clear local latest & history"
-                >
-                  Clear data
-                </button>
-              </div>
-            </div>
-
-            <div className="toggle-row">
-              <label>
-                <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />{' '}
-                Auto-refresh ({refreshInterval / 1000}s)
-              </label>
-              <input
-                type="range"
-                min="2000"
-                max="30000"
-                step="1000"
-                value={refreshInterval}
-                onChange={(e) => setRefreshInterval(Number(e.target.value))}
-                disabled={!autoRefresh}
-              />
-            </div>
-
-            <div className="toggle-row">
-              <label>
-                <input type="checkbox" checked={followTarget} onChange={(e) => setFollowTarget(e.target.checked)} /> Follow
-                target
-              </label>
-              <label>
-                <input type="checkbox" checked={showPath} onChange={(e) => setShowPath(e.target.checked)} /> Show path
-              </label>
-            </div>
-
-            <div className="toggle-row map-style-row">
-              <span>Map style</span>
-              <div className="map-style-toggle">
-                <button className={mapStyle === 'standard' ? 'btn small active' : 'btn small'} onClick={() => setMapStyle('standard')}>
-                  Standard
-                </button>
-                <button className={mapStyle === 'dark' ? 'btn small active' : 'btn small'} onClick={() => setMapStyle('dark')}>
-                  Night Ops
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {latestLocation && (
-            <div className="panel-section glass device-info">
+        {/* Left control panel (desktop: column left, mobile: drawer) */}
+        <aside className={`control-panel drawer ${isMobile ? 'mobile-drawer' : ''} ${drawerOpen ? 'drawer-open' : ''}`} aria-hidden={!drawerOpen && isMobile}>
+          <div className="panel-scroll">
+            <div className="panel-section glass">
               <div className="panel-head">
-                <h2>Unit Snapshot</h2>
-                <div className="chip ghost">Live feed</div>
+                <h2>Target Control</h2>
+                <div className="chip">Live</div>
               </div>
-              <h3>{latestLocation.device_id}</h3>
-              <div className="info-grid">
-                <div>
-                  <span className="label">Location</span>
-                  <span>
-                    {latestLocation.lat.toFixed(6)}, {latestLocation.lon.toFixed(6)}
-                  </span>
-                </div>
-                {latestLocation.speed !== null && (
-                  <div>
-                    <span className="label">Speed</span>
-                    <span>{latestLocation.speed.toFixed(2)} m/s</span>
-                  </div>
-                )}
-                {latestLocation.battery !== null && (
-                  <div>
-                    <span className="label">Battery</span>
-                    <span>{latestLocation.battery}%</span>
-                  </div>
-                )}
-                <div>
-                  <span className="label">SOS</span>
-                  <span className={latestLocation.sos ? 'sos active' : 'sos'}>{latestLocation.sos ? '⚠ ACTIVE' : 'Normal'}</span>
-                </div>
-                <div>
-                  <span className="label">Track points</span>
-                  <span>{history.length}</span>
-                </div>
-                <div>
-                  <span className="label">Last update</span>
-                  <span>{formatHHMMSS(latestLocation.timestamp)}</span>
+              <label htmlFor="deviceId" className="field-label">
+                Device ID
+              </label>
+              <div className="device-row">
+                <input
+                  id="deviceId"
+                  type="text"
+                  value={deviceId}
+                  onChange={(e) => {
+                    setDeviceId(e.target.value);
+                    // clear previous points immediately when device changes
+                    setLatestLocation(null);
+                    setHistory([]);
+                  }}
+                  placeholder="esp01"
+                />
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button className="btn primary" onClick={loadData} disabled={loading}>
+                    {loading ? 'Loading…' : 'Refresh'}
+                  </button>
+                  <button
+                    className="btn outline"
+                    onClick={clearLocalData}
+                    disabled={loading && !latestLocation && history.length === 0}
+                    title="Clear local latest & history"
+                  >
+                    Clear
+                  </button>
                 </div>
               </div>
-            </div>
-          )}
 
-          <div className="panel-section glass mini-trail">
-            <div className="panel-head">
-              <h2>Recent trail</h2>
-              <small>Last {recentTrail.length} points</small>
-            </div>
-            {recentTrail.length === 0 && <p className="muted">No trail yet. Ingest data to see it live.</p>}
-            {recentTrail.map((p, idx) => (
-              <div key={`${p.lat}-${p.lon}-${idx}`} className="trail-row">
-                <span className="dot" />
-                <div>
-                  <div className="coords">
-                    {p.lat.toFixed(5)}, {p.lon.toFixed(5)}
-                  </div>
-                  <small>{p.ts ? formatHHMMSS(p.ts) : '--:--:--'}</small>
+              <div className="toggle-row">
+                <label>
+                  <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />{' '}
+                  Auto-refresh ({refreshInterval / 1000}s)
+                </label>
+                <input
+                  type="range"
+                  min="2000"
+                  max="30000"
+                  step="1000"
+                  value={refreshInterval}
+                  onChange={(e) => setRefreshInterval(Number(e.target.value))}
+                  disabled={!autoRefresh}
+                />
+              </div>
+
+              <div className="toggle-row">
+                <label>
+                  <input type="checkbox" checked={followTarget} onChange={(e) => setFollowTarget(e.target.checked)} /> Follow
+                  target
+                </label>
+                <label>
+                  <input type="checkbox" checked={showPath} onChange={(e) => setShowPath(e.target.checked)} /> Show path
+                </label>
+              </div>
+
+              <div className="toggle-row map-style-row">
+                <span>Map style</span>
+                <div className="map-style-toggle">
+                  <button className={mapStyle === 'standard' ? 'btn small active' : 'btn small'} onClick={() => setMapStyle('standard')}>
+                    Standard
+                  </button>
+                  <button className={mapStyle === 'dark' ? 'btn small active' : 'btn small'} onClick={() => setMapStyle('dark')}>
+                    Night Ops
+                  </button>
                 </div>
               </div>
-            ))}
+            </div>
+
+            {latestLocation && (
+              <div className="panel-section glass device-info">
+                <div className="panel-head">
+                  <h2>Unit Snapshot</h2>
+                  <div className="chip ghost">Live feed</div>
+                </div>
+                <h3>{latestLocation.device_id}</h3>
+                <div className="info-grid">
+                  <div>
+                    <span className="label">Location</span>
+                    <span>
+                      {latestLocation.lat.toFixed(6)}, {latestLocation.lon.toFixed(6)}
+                    </span>
+                  </div>
+                  {latestLocation.speed !== null && (
+                    <div>
+                      <span className="label">Speed</span>
+                      <span>{latestLocation.speed.toFixed(2)} m/s</span>
+                    </div>
+                  )}
+                  <div>
+                    <span className="label">Track points</span>
+                    <span>{pointsCount}</span>
+                  </div>
+                  <div>
+                    <span className="label">Last update</span>
+                    <span>{formatHHMMSS(lastUpdateEpoch ?? latestLocation.timestamp)}</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div className="panel-section glass mini-trail">
+              <div className="panel-head">
+                <h2>Recent trail</h2>
+                <small>Last {recentTrail.length} points</small>
+              </div>
+              {recentTrail.length === 0 && <p className="muted">No trail yet. Ingest data to see it live.</p>}
+              {recentTrail.map((p, idx) => (
+                <div key={`${p.lat}-${p.lon}-${idx}`} className="trail-row">
+                  <span className="dot" />
+                  <div>
+                    <div className="coords">
+                      {p.lat.toFixed(5)}, {p.lon.toFixed(5)}
+                    </div>
+                    <small>{p.ts ? formatHHMMSS(p.ts) : '--:--:--'}</small>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {error && <div className="panel-section glass error-box">{error}</div>}
           </div>
-
-          {error && <div className="panel-section glass error-box">{error}</div>}
         </aside>
 
         {/* Map area */}
-        <main className="map-shell glass">
+        <main className={`map-shell glass ${isMobile ? 'map-full' : ''}`}>
           <div className="map-overlay-top">
             <div className="map-pill">
               <span className="pulse-dot" /> Live ops map
@@ -654,7 +665,7 @@ function App() {
             )}
           </div>
 
-          <MapContainer center={mapCenter} zoom={13} zoomControl={true} style={{ height: '100%', width: '100%' }}>
+          <MapContainer center={mapCenter} zoom={13} zoomControl={true} style={mapContainerStyle}>
             <TileLayer attribution="&copy; OpenStreetMap contributors" url={tileUrl} />
 
             <ScaleControl position="bottomleft" />
@@ -704,7 +715,7 @@ function App() {
                       </>
                     )}
                     <br />
-                    <small>{formatHHMMSS(latestLocation.timestamp)}</small>
+                    <small>{formatHHMMSS(lastUpdateEpoch ?? latestLocation.timestamp)}</small>
                   </div>
                 </Popup>
               </SmoothMarker>
