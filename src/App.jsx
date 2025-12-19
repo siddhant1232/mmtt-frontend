@@ -720,18 +720,18 @@ function App() {
 
           <div className="panel-scroll">
             {/* Header integrated into Sidebar */}
-            <div className="bsf-header-sidebar" style={{ marginBottom: '20px' }}>
-              <div className="bsf-title" style={{ marginBottom: '16px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+            {/* Header integrated into Sidebar */}
+            <div className="bsf-header-sidebar">
+              <div className="bsf-title-section">
+                <div className="bsf-title-row">
                   {/* <span className="bsf-badge">BSF</span> */}
-                  <div className="chip success" style={{ marginLeft: 'auto', fontSize: '10px', padding: '2px 8px' }}>
+                  <div className="chip success small-status">
                     <span className="status-dot online" />
                   </div>
                   {isMobile && (
                     <button
-                      className="btn-icon"
+                      className="btn-icon mobile-close-btn"
                       onClick={() => setDrawerOpen(false)}
-                      style={{ marginLeft: '8px', background: 'transparent' }}
                       aria-label="Close menu"
                     >
                       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -740,17 +740,16 @@ function App() {
                     </button>
                   )}
                 </div>
-                <h1 style={{ fontSize: '20px', lineHeight: '1.2' }}>MMTT</h1>
-                <p style={{ fontSize: '12px', opacity: 0.6, marginTop: '4px' }}>Live field unit situational awareness</p>
+                <h1 className="bsf-app-title">MMTT</h1>
+                <p className="bsf-app-subtitle">Live field unit situational awareness</p>
               </div>
 
-              <div className="bsf-actions-sidebar" style={{ display: 'flex', gap: '8px' }}>
+              <div className="bsf-actions-row">
                 <button
-                  className="btn outline"
+                  className="btn outline flex-grow-btn"
                   onClick={loadData}
                   disabled={loading}
                   title="Refresh data (Ctrl/Cmd + R)"
-                  style={{ flex: 1, justifyContent: 'center' }}
                 >
                   {loading ? 'Syncing...' : 'Sync Data'}
                 </button>
@@ -758,7 +757,6 @@ function App() {
                   className="btn-icon"
                   onClick={() => setShowHelp(true)}
                   title="Keyboard shortcuts (?)"
-                  style={{ width: '36px' }}
                 >
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <circle cx="12" cy="12" r="10" />
@@ -774,7 +772,7 @@ function App() {
                 <div className="chip">Live</div>
               </div>
               <label htmlFor="deviceId" className="field-label">Device ID</label>
-              <div className="device-row">
+              <div className="control-group">
                 <input
                   id="deviceId"
                   type="text"
@@ -788,103 +786,94 @@ function App() {
                   aria-label="Device ID input"
                   autoComplete="off"
                 />
-                <div style={{ display: 'flex', gap: 10 }}>
-                  <button className="btn primary" onClick={loadData} disabled={loading}>
-                    {loading ? (
-                      <>
-                        <span className="loading-spinner" style={{ display: 'inline-block', marginRight: '6px' }} />
-                        Loading…
-                      </>
-                    ) : (
-                      'Refresh'
-                    )}
-                  </button>
-                  <button
-                    className="btn outline"
-                    onClick={clearLocalData}
-                    disabled={loading && !latestLocation && history.length === 0}
-                    title="Clear local latest & history"
-                  >
-                    Clear
-                  </button>
+              </div>
+
+              <div className="action-row">
+                <button className="btn primary flex-btn" onClick={loadData} disabled={loading}>
+                  {loading ? (
+                    <>
+                      <span className="loading-spinner" style={{ marginRight: '6px' }} />
+                      Loading
+                    </>
+                  ) : (
+                    'Refresh'
+                  )}
+                </button>
+                <button
+                  className="btn outline flex-btn"
+                  onClick={clearLocalData}
+                  disabled={loading && !latestLocation && history.length === 0}
+                  title="Clear local latest & history"
+                >
+                  Clear
+                </button>
+              </div>
+
+              <div className="section-divider" />
+
+              <div className="toggles-container">
+                <div className="toggle-item-row">
+                  <label className="toggle-label-group">
+                    <input
+                      type="checkbox"
+                      checked={autoRefresh}
+                      onChange={(e) => setAutoRefresh(e.target.checked)}
+                      aria-label="Auto-refresh toggle"
+                    />
+                    <span>Auto-refresh</span>
+                  </label>
+                  <div className="slider-wrapper">
+                    <span className="slider-value">{refreshInterval / 1000}s</span>
+                    <input
+                      type="range"
+                      min="2000"
+                      max="30000"
+                      step="1000"
+                      value={refreshInterval}
+                      onChange={(e) => setRefreshInterval(Number(e.target.value))}
+                      disabled={!autoRefresh}
+                      className="mini-slider"
+                    />
+                  </div>
+                </div>
+
+                <div className="toggle-item-row">
+                  <label className="toggle-label-group">
+                    <input
+                      type="checkbox"
+                      checked={followTarget}
+                      onChange={(e) => setFollowTarget(e.target.checked)}
+                    />
+                    <span>Follow target (F)</span>
+                  </label>
+                </div>
+
+                <div className="toggle-item-row">
+                  <label className="toggle-label-group">
+                    <input
+                      type="checkbox"
+                      checked={showPath}
+                      onChange={(e) => setShowPath(e.target.checked)}
+                    />
+                    <span>Show trail (P)</span>
+                  </label>
                 </div>
               </div>
 
-              <div className="toggle-row">
-                <label htmlFor="autoRefresh" className="tooltip-container">
-                  <input
-                    id="autoRefresh"
-                    type="checkbox"
-                    checked={autoRefresh}
-                    onChange={(e) => setAutoRefresh(e.target.checked)}
-                    aria-label="Auto-refresh toggle"
-                  />{' '}
-                  Auto-refresh ({refreshInterval / 1000}s)
-                  {showTooltips && (
-                    <span className="tooltip">Toggle with Space key</span>
-                  )}
-                </label>
-                <input
-                  type="range"
-                  min="2000"
-                  max="30000"
-                  step="1000"
-                  value={refreshInterval}
-                  onChange={(e) => setRefreshInterval(Number(e.target.value))}
-                  disabled={!autoRefresh}
-                  aria-label="Refresh interval"
-                  aria-valuemin={2000}
-                  aria-valuemax={30000}
-                  aria-valuenow={refreshInterval}
-                />
-              </div>
+              <div className="section-divider" />
 
-              <div className="toggle-row">
-                <label htmlFor="followTarget" className="tooltip-container">
-                  <input
-                    id="followTarget"
-                    type="checkbox"
-                    checked={followTarget}
-                    onChange={(e) => setFollowTarget(e.target.checked)}
-                    aria-label="Follow target toggle"
-                  /> Follow
-                  target
-                  {showTooltips && (
-                    <span className="tooltip">Toggle with F key</span>
-                  )}
-                </label>
-                <label htmlFor="showPath" className="tooltip-container">
-                  <input
-                    id="showPath"
-                    type="checkbox"
-                    checked={showPath}
-                    onChange={(e) => setShowPath(e.target.checked)}
-                    aria-label="Show path toggle"
-                  /> Show path
-                  {showTooltips && (
-                    <span className="tooltip">Toggle with P key</span>
-                  )}
-                </label>
-              </div>
-
-              <div className="toggle-row map-style-row">
-                <span>Map style</span>
-                <div className="map-style-toggle">
+              <div className="map-style-block">
+                <span className="style-label">Map Style</span>
+                <div className="style-toggles">
                   <button
                     className={mapStyle === 'standard' ? 'btn small active' : 'btn small'}
                     onClick={() => setMapStyle('standard')}
-                    aria-label="Standard map style"
-                    aria-pressed={mapStyle === 'standard'}
-                    title="Standard map (M key)"
                   >
                     Standard
                   </button>
                   <button
                     className={mapStyle === 'dark' ? 'btn small active' : 'btn small'}
                     onClick={() => setMapStyle('dark')}
-                    aria-label="Night Ops map style"
-                    aria-pressed={mapStyle === 'dark'}
-                    title="Night Ops map (M key)"
                   >
                     Night Ops
                   </button>
