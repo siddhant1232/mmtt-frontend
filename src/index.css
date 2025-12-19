@@ -1001,12 +1001,7 @@ a,
     padding: 16px;
   }
 
-  .map-overlay-top {
-    left: 12px;
-    top: 12px;
-    flex-direction: row;
-    flex-wrap: wrap;
-  }
+
 
   .map-pill {
     font-size: 11px;
