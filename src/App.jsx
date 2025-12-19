@@ -1,5 +1,5 @@
 // src/App.jsx
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
   MapContainer,
   TileLayer,
@@ -11,7 +11,7 @@ import {
 } from 'react-leaflet';
 import { Icon } from 'leaflet';
 import { fetchLatestLocation, fetchHistory } from './api/trackingapp.js';
-import './App.css';
+import 'leaflet/dist/leaflet.css';
 import 'leaflet/dist/leaflet.css';
 
 // ---------------------- Responsive helpers ----------------------
@@ -217,9 +217,13 @@ function App() {
   const [followTarget, setFollowTarget] = useState(true);
   const [showPath, setShowPath] = useState(true);
   const [mapStyle, setMapStyle] = useState('standard');
+  const [showStats, setShowStats] = useState(true);
+  const [showTooltips, setShowTooltips] = useState(true);
+  const [showHelp, setShowHelp] = useState(false);
 
   const [isMobile, setIsMobile] = useState(typeof window !== 'undefined' ? window.innerWidth <= MOBILE_BREAKPOINT : false);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
 
   const [toastMessage, setToastMessage] = useState(null);
   const toastTimerRef = useRef(null);
@@ -237,7 +241,7 @@ function App() {
     return () => window.removeEventListener('resize', onResize);
   }, []);
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     if (!deviceId.trim()) {
       setError('Please enter a device ID');
       return;
@@ -311,7 +315,74 @@ function App() {
     } finally {
       if (mountedRef.current) setLoading(false);
     }
-  };
+  }, [deviceId]);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyPress = (e) => {
+      // Don't trigger shortcuts when typing in inputs
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+      // Ctrl/Cmd + R: Refresh
+      if ((e.ctrlKey || e.metaKey) && e.key === 'r') {
+        e.preventDefault();
+        loadData();
+        return;
+      }
+
+      // Ctrl/Cmd + K: Toggle drawer (mobile)
+      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+        e.preventDefault();
+        if (isMobile) setDrawerOpen((prev) => !prev);
+        return;
+      }
+
+      // Space: Toggle auto-refresh
+      if (e.key === ' ' && !e.target.tagName.match(/INPUT|TEXTAREA|BUTTON/)) {
+        e.preventDefault();
+        setAutoRefresh((prev) => !prev);
+        return;
+      }
+
+      // M: Toggle map style
+      if (e.key === 'm' || e.key === 'M') {
+        e.preventDefault();
+        setMapStyle((prev) => (prev === 'standard' ? 'dark' : 'standard'));
+        return;
+      }
+
+      // F: Toggle follow target
+      if (e.key === 'f' || e.key === 'F') {
+        e.preventDefault();
+        setFollowTarget((prev) => !prev);
+        return;
+      }
+
+      // P: Toggle path
+      if (e.key === 'p' || e.key === 'P') {
+        e.preventDefault();
+        setShowPath((prev) => !prev);
+        return;
+      }
+
+      // ?: Toggle help
+      if (e.key === '?') {
+        e.preventDefault();
+        setShowHelp((prev) => !prev);
+        return;
+      }
+
+      // Escape: Close modals/drawer
+      if (e.key === 'Escape') {
+        setShowHelp(false);
+        if (isMobile) setDrawerOpen(false);
+        return;
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyPress);
+    return () => window.removeEventListener('keydown', handleKeyPress);
+  }, [isMobile, loadData]);
 
   const clearLocalData = () => {
     setLatestLocation(null);
@@ -394,19 +465,76 @@ function App() {
     return 0;
   }, [history, latestLocation]);
 
+  // Calculate accurate distance using Haversine formula
   const pathDistance = useMemo(() => {
     if (!Array.isArray(history) || history.length < 2) return 0;
+    const toRad = (v) => (v * Math.PI) / 180;
+    const R = 6371; // Earth radius in km
     let total = 0;
     for (let i = 1; i < history.length; i += 1) {
       const a = history[i - 1];
       const b = history[i];
       if (!a || !b) continue;
-      const dx = b.lat - a.lat;
-      const dy = b.lon - a.lon;
-      total += Math.sqrt(dx * dx + dy * dy) * 111;
+      const dLat = toRad(b.lat - a.lat);
+      const dLon = toRad(b.lon - a.lon);
+      const lat1 = toRad(a.lat);
+      const lat2 = toRad(b.lat);
+      const calc =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+      const c = 2 * Math.atan2(Math.sqrt(calc), Math.sqrt(1 - calc));
+      total += R * c;
     }
     return total;
   }, [history]);
+
+  // Calculate average speed
+  const averageSpeed = useMemo(() => {
+    if (!latestLocation || latestLocation.speed === null) return null;
+    if (history.length < 2) return latestLocation.speed;
+
+    const speeds = history
+      .map((p, i) => {
+        if (i === 0 || !p.ts || !history[i - 1]?.ts) return null;
+        const dt = p.ts - history[i - 1].ts;
+        if (dt <= 0) return null;
+        const toRad = (v) => (v * Math.PI) / 180;
+        const R = 6371;
+        const dLat = toRad(p.lat - history[i - 1].lat);
+        const dLon = toRad(p.lon - history[i - 1].lon);
+        const lat1 = toRad(history[i - 1].lat);
+        const lat2 = toRad(p.lat);
+        const calc =
+          Math.sin(dLat / 2) ** 2 +
+          Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+        const c = 2 * Math.atan2(Math.sqrt(calc), Math.sqrt(1 - calc));
+        const distance = R * c * 1000; // in meters
+        return distance / dt; // m/s
+      })
+      .filter((s) => s !== null);
+
+    if (speeds.length === 0) return latestLocation.speed;
+    const avg = speeds.reduce((a, b) => a + b, 0) / speeds.length;
+    return avg;
+  }, [history, latestLocation]);
+
+  // Calculate tracking duration
+  const trackingDuration = useMemo(() => {
+    if (!Array.isArray(history) || history.length < 2) return null;
+    const first = history[0]?.ts;
+    const last = history[history.length - 1]?.ts;
+    if (!first || !last) return null;
+    return last - first;
+  }, [history]);
+
+  // Format duration
+  const formatDuration = (seconds) => {
+    if (!seconds) return '--';
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    if (hours > 0) return `${hours}h ${minutes}m`;
+    return `${minutes}m`;
+  };
 
   const recentTrail = useMemo(() => {
     if (!Array.isArray(history) || history.length === 0) return [];
@@ -419,65 +547,227 @@ function App() {
   const mapCenter = latestLocation
     ? [latestLocation.lat, latestLocation.lon]
     : history.length > 0
-    ? [history[history.length - 1].lat, history[history.length - 1].lon]
-    : fallbackCenter;
+      ? [history[history.length - 1].lat, history[history.length - 1].lon]
+      : fallbackCenter;
 
   const tileUrl =
     mapStyle === 'standard'
       ? 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png'
       : 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
 
-  const HEADER_HEIGHT = 64;
-  const mapContainerStyle = isMobile
-    ? { height: `calc(100vh - ${HEADER_HEIGHT}px)`, width: '100%' }
-    : { height: '100%', width: '100%' }; // .map-shell handles desktop height
+  const mapContainerStyle = { height: '100%', width: '100%', outline: 'none' };
 
   return (
     <div className={`app-root ${isMobile ? 'mobile' : 'desktop'}`}>
-      <div className="hero-glow" />
 
-      <header className="bsf-header" style={{ height: HEADER_HEIGHT }}>
-        <div className="bsf-title">
-          <span className="bsf-badge">BSF</span>
-          <div>
-            <h1>Multi-Mode Tactical Tracker</h1>
-            <p>Live field unit situational awareness</p>
-          </div>
-        </div>
+      {/* 1. Map Layer (Background) */}
+      <main className={`map-shell ${isMobile ? 'map-full' : ''}`} key={`${deviceId}-${mapStyle}`}>
+        <MapContainer
+          whenCreated={(m) => {
+            mapRef.current = m;
+            setTimeout(() => m.invalidateSize?.(), 60);
+          }}
+          center={mapCenter}
+          zoom={13}
+          zoomControl={false} /* We style our own or use default position but moved via CSS */
+          style={mapContainerStyle}
+          id="leaflet-main-map"
+        >
+          <TileLayer attribution="&copy; OpenStreetMap contributors" url={tileUrl} />
+          <ScaleControl position="bottomleft" />
 
-        <div className="bsf-actions">
-          {isMobile && (
-            <button
-              className="mobile-toggle"
-              aria-label="Open controls"
-              onClick={() => setDrawerOpen((v) => !v)}
-            >
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden>
-                <path d="M3 6h18M3 12h18M3 18h18" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-              </svg>
-            </button>
+          {/* Custom Zoom Control position if needed, or rely on CSS overriding .leaflet-top */}
+
+          {followTarget && latestLocation && <RecenterOnTarget lat={latestLocation.lat} lon={latestLocation.lon} />}
+
+          {showPath && polylineCoordinates.length > 1 && (
+            <Polyline
+              positions={polylineCoordinates}
+              pathOptions={{
+                color: '#ff8c00',
+                weight: 5,
+                opacity: 0.85,
+                smoothFactor: 1.5,
+                lineCap: 'round',
+                lineJoin: 'round',
+              }}
+            />
           )}
 
-          <div className="chip success">
-            <span className="status-dot online" />
-            Backend online
-          </div>
-          <button className="btn outline" onClick={loadData} disabled={loading}>
-            {loading ? 'Syncing…' : 'Sync now'}
-          </button>
-        </div>
-      </header>
+          {latestLocation && (
+            <SmoothMarker position={[latestLocation.lat, latestLocation.lon]}>
+              <Popup className="custom-popup">
+                <div className="popup-content">
+                  <strong>{latestLocation.device_id}</strong>
+                  <div style={{ marginTop: '8px', paddingTop: '8px', borderTop: '1px solid rgba(255,255,255,0.1)' }}>
+                    <div style={{ marginBottom: '4px' }}>
+                      <span style={{ opacity: 0.7, fontSize: '11px' }}>Lat:</span> {latestLocation.lat.toFixed(6)}
+                    </div>
+                    <div style={{ marginBottom: '4px' }}>
+                      <span style={{ opacity: 0.7, fontSize: '11px' }}>Lon:</span> {latestLocation.lon.toFixed(6)}
+                    </div>
+                    {latestLocation.speed !== null && (
+                      <div style={{ marginBottom: '4px' }}>
+                        <span style={{ opacity: 0.7, fontSize: '11px' }}>Speed:</span> {latestLocation.speed.toFixed(2)} m/s
+                      </div>
+                    )}
+                    {latestLocation.battery !== null && (
+                      <div style={{ marginBottom: '4px' }}>
+                        <span style={{ opacity: 0.7, fontSize: '11px' }}>Battery:</span> {latestLocation.battery}%
+                      </div>
+                    )}
+                    {latestLocation.sos && (
+                      <div style={{
+                        marginTop: '8px',
+                        padding: '6px',
+                        background: 'rgba(239, 68, 68, 0.2)',
+                        borderRadius: '6px',
+                        border: '1px solid rgba(239, 68, 68, 0.4)'
+                      }}>
+                        <strong style={{ color: '#ef4444', fontSize: '12px' }}>⚠ SOS ACTIVE</strong>
+                      </div>
+                    )}
+                    <small>{formatHHMMSS(lastUpdateEpoch ?? latestLocation.timestamp)}</small>
+                  </div>
+                </div>
+              </Popup>
+            </SmoothMarker>
+          )}
 
+          {latestLocation && latestLocation.sos && (
+            <>
+              <div className="sos-pulse-layer" />
+              <div className="sos-floating-card" aria-hidden>
+                <div className="sos-inner">
+                  <h3>⚠ SOS ACTIVE</h3>
+                  <p>
+                    Unit <strong>{latestLocation.device_id}</strong> reported SOS.
+                    <br />
+                    {latestLocation.lat.toFixed(6)}, {latestLocation.lon.toFixed(6)}
+                  </p>
+                </div>
+              </div>
+            </>
+          )}
+        </MapContainer>
+
+        {/* Map Overlays (Top-Right) */}
+        <div className="map-overlay-top">
+          <div className="map-pill">
+            <span className="pulse-dot" /> Live ops map
+          </div>
+          {latestLocation && (
+            <div className="map-pill subtle">
+              <strong style={{ color: '#ff8c00' }}>{latestLocation.device_id}</strong> · {latestLocation.lat.toFixed(4)}, {latestLocation.lon.toFixed(4)}
+            </div>
+          )}
+          {latestLocation && latestLocation.speed !== null && (
+            <div className="map-pill subtle">
+              Speed: <strong>{latestLocation.speed.toFixed(1)} m/s</strong>
+            </div>
+          )}
+        </div>
+      </main>
+
+      {/* Mobile Toggle Button (Floating) */}
+      {
+        isMobile && !drawerOpen && (
+          <button
+            className="mobile-floating-toggle"
+            aria-label="Open controls"
+            onClick={() => setDrawerOpen(true)}
+          >
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="3" y1="12" x2="21" y2="12"></line>
+              <line x1="3" y1="6" x2="21" y2="6"></line>
+              <line x1="3" y1="18" x2="21" y2="18"></line>
+            </svg>
+          </button>
+        )
+      }
+
+      {/* 2. Header Layer (Floating Top) */}
+      {/* 2. Header Layer (Moved to Sidebar) */}
+
+      {/* 3. Controls Layer (Floating Left) */}
       <div className={`layout ${isMobile ? 'mobile-layout' : 'desktop-layout'}`}>
         {/* Backdrop for drawer (mobile) */}
         {isMobile && drawerOpen && <div className="drawer-backdrop" onClick={() => setDrawerOpen(false)} />}
 
-        {/* Control panel remains in DOM order after map (map is visually first via CSS order), but you can move places if you prefer */}
         <aside
-          className={`control-panel drawer ${isMobile ? 'mobile-drawer' : ''} ${drawerOpen ? 'drawer-open' : ''}`}
+          className={`control-panel drawer ${isMobile ? 'mobile-drawer' : ''} ${drawerOpen ? 'drawer-open' : ''} ${!isMobile && !sidebarOpen ? 'collapsed' : ''}`}
           aria-hidden={!drawerOpen && isMobile}
         >
+          {/* Sidebar Hardware Toggle (Desktop) */}
+          {!isMobile && (
+            <button
+              className="sidebar-toggle"
+              onClick={() => setSidebarOpen((prev) => !prev)}
+              aria-label={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
+              title={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
+            >
+              {sidebarOpen ? (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M15 18l-6-6 6-6" />
+                </svg>
+              ) : (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M9 18l6-6-6-6" />
+                </svg>
+              )}
+            </button>
+          )}
+
           <div className="panel-scroll">
+            {/* Header integrated into Sidebar */}
+            <div className="bsf-header-sidebar" style={{ marginBottom: '20px' }}>
+              <div className="bsf-title" style={{ marginBottom: '16px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                  {/* <span className="bsf-badge">BSF</span> */}
+                  <div className="chip success" style={{ marginLeft: 'auto', fontSize: '10px', padding: '2px 8px' }}>
+                    <span className="status-dot online" />
+                  </div>
+                  {isMobile && (
+                    <button
+                      className="btn-icon"
+                      onClick={() => setDrawerOpen(false)}
+                      style={{ marginLeft: '8px', background: 'transparent' }}
+                      aria-label="Close menu"
+                    >
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M18 6L6 18M6 6l12 12" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+                <h1 style={{ fontSize: '20px', lineHeight: '1.2' }}>MMTT</h1>
+                <p style={{ fontSize: '12px', opacity: 0.6, marginTop: '4px' }}>Live field unit situational awareness</p>
+              </div>
+
+              <div className="bsf-actions-sidebar" style={{ display: 'flex', gap: '8px' }}>
+                <button
+                  className="btn outline"
+                  onClick={loadData}
+                  disabled={loading}
+                  title="Refresh data (Ctrl/Cmd + R)"
+                  style={{ flex: 1, justifyContent: 'center' }}
+                >
+                  {loading ? 'Syncing...' : 'Sync Data'}
+                </button>
+                <button
+                  className="btn-icon"
+                  onClick={() => setShowHelp(true)}
+                  title="Keyboard shortcuts (?)"
+                  style={{ width: '36px' }}
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <circle cx="12" cy="12" r="10" />
+                    <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+
             <div className="panel-section glass">
               <div className="panel-head">
                 <h2>Target Control</h2>
@@ -495,10 +785,19 @@ function App() {
                     setHistory([]);
                   }}
                   placeholder="esp01"
+                  aria-label="Device ID input"
+                  autoComplete="off"
                 />
-                <div style={{ display: 'flex', gap: 8 }}>
+                <div style={{ display: 'flex', gap: 10 }}>
                   <button className="btn primary" onClick={loadData} disabled={loading}>
-                    {loading ? 'Loading…' : 'Refresh'}
+                    {loading ? (
+                      <>
+                        <span className="loading-spinner" style={{ display: 'inline-block', marginRight: '6px' }} />
+                        Loading…
+                      </>
+                    ) : (
+                      'Refresh'
+                    )}
                   </button>
                   <button
                     className="btn outline"
@@ -512,9 +811,18 @@ function App() {
               </div>
 
               <div className="toggle-row">
-                <label>
-                  <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />{' '}
+                <label htmlFor="autoRefresh" className="tooltip-container">
+                  <input
+                    id="autoRefresh"
+                    type="checkbox"
+                    checked={autoRefresh}
+                    onChange={(e) => setAutoRefresh(e.target.checked)}
+                    aria-label="Auto-refresh toggle"
+                  />{' '}
                   Auto-refresh ({refreshInterval / 1000}s)
+                  {showTooltips && (
+                    <span className="tooltip">Toggle with Space key</span>
+                  )}
                 </label>
                 <input
                   type="range"
@@ -524,31 +832,149 @@ function App() {
                   value={refreshInterval}
                   onChange={(e) => setRefreshInterval(Number(e.target.value))}
                   disabled={!autoRefresh}
+                  aria-label="Refresh interval"
+                  aria-valuemin={2000}
+                  aria-valuemax={30000}
+                  aria-valuenow={refreshInterval}
                 />
               </div>
 
               <div className="toggle-row">
-                <label>
-                  <input type="checkbox" checked={followTarget} onChange={(e) => setFollowTarget(e.target.checked)} /> Follow
+                <label htmlFor="followTarget" className="tooltip-container">
+                  <input
+                    id="followTarget"
+                    type="checkbox"
+                    checked={followTarget}
+                    onChange={(e) => setFollowTarget(e.target.checked)}
+                    aria-label="Follow target toggle"
+                  /> Follow
                   target
+                  {showTooltips && (
+                    <span className="tooltip">Toggle with F key</span>
+                  )}
                 </label>
-                <label>
-                  <input type="checkbox" checked={showPath} onChange={(e) => setShowPath(e.target.checked)} /> Show path
+                <label htmlFor="showPath" className="tooltip-container">
+                  <input
+                    id="showPath"
+                    type="checkbox"
+                    checked={showPath}
+                    onChange={(e) => setShowPath(e.target.checked)}
+                    aria-label="Show path toggle"
+                  /> Show path
+                  {showTooltips && (
+                    <span className="tooltip">Toggle with P key</span>
+                  )}
                 </label>
               </div>
 
               <div className="toggle-row map-style-row">
                 <span>Map style</span>
                 <div className="map-style-toggle">
-                  <button className={mapStyle === 'standard' ? 'btn small active' : 'btn small'} onClick={() => setMapStyle('standard')}>
+                  <button
+                    className={mapStyle === 'standard' ? 'btn small active' : 'btn small'}
+                    onClick={() => setMapStyle('standard')}
+                    aria-label="Standard map style"
+                    aria-pressed={mapStyle === 'standard'}
+                    title="Standard map (M key)"
+                  >
                     Standard
                   </button>
-                  <button className={mapStyle === 'dark' ? 'btn small active' : 'btn small'} onClick={() => setMapStyle('dark')}>
+                  <button
+                    className={mapStyle === 'dark' ? 'btn small active' : 'btn small'}
+                    onClick={() => setMapStyle('dark')}
+                    aria-label="Night Ops map style"
+                    aria-pressed={mapStyle === 'dark'}
+                    title="Night Ops map (M key)"
+                  >
                     Night Ops
                   </button>
                 </div>
               </div>
             </div>
+
+            {showStats && (latestLocation || history.length > 0) && (
+              <div className="panel-section glass stats-dashboard">
+                <div className="panel-head">
+                  <h2>Statistics</h2>
+                  <button
+                    className="btn-icon"
+                    onClick={() => setShowStats(false)}
+                    aria-label="Hide statistics"
+                    title="Hide statistics"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M18 6L6 18M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+                <div className="stats-grid">
+                  <div className="stat-card">
+                    <div className="stat-icon" style={{ background: 'rgba(255, 140, 0, 0.15)' }}>
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
+                        <circle cx="12" cy="10" r="3" />
+                      </svg>
+                    </div>
+                    <div className="stat-content">
+                      <span className="stat-label">Track Points</span>
+                      <span className="stat-value">{pointsCount.toLocaleString()}</span>
+                    </div>
+                  </div>
+                  <div className="stat-card">
+                    <div className="stat-icon" style={{ background: 'rgba(99, 102, 241, 0.15)' }}>
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M5 12h14M12 5l7 7-7 7" />
+                      </svg>
+                    </div>
+                    <div className="stat-content">
+                      <span className="stat-label">Distance</span>
+                      <span className="stat-value">
+                        {pathDistance < 1
+                          ? `${(pathDistance * 1000).toFixed(0)} m`
+                          : `${pathDistance.toFixed(2)} km`}
+                      </span>
+                    </div>
+                  </div>
+                  {averageSpeed !== null && (
+                    <div className="stat-card">
+                      <div className="stat-icon" style={{ background: 'rgba(34, 197, 94, 0.15)' }}>
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+                        </svg>
+                      </div>
+                      <div className="stat-content">
+                        <span className="stat-label">Avg Speed</span>
+                        <span className="stat-value">{averageSpeed.toFixed(2)} m/s</span>
+                      </div>
+                    </div>
+                  )}
+                  {trackingDuration && (
+                    <div className="stat-card">
+                      <div className="stat-icon" style={{ background: 'rgba(139, 92, 246, 0.15)' }}>
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <circle cx="12" cy="12" r="10" />
+                          <polyline points="12 6 12 12 16 14" />
+                        </svg>
+                      </div>
+                      <div className="stat-content">
+                        <span className="stat-label">Duration</span>
+                        <span className="stat-value">{formatDuration(trackingDuration)}</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {!showStats && (latestLocation || history.length > 0) && (
+              <button
+                className="btn outline"
+                onClick={() => setShowStats(true)}
+                style={{ marginBottom: '16px', width: '100%' }}
+              >
+                Show Statistics
+              </button>
+            )}
 
             {latestLocation && (
               <div className="panel-section glass device-info">
@@ -556,16 +982,48 @@ function App() {
                   <h2>Unit Snapshot</h2>
                   <div className="chip ghost">Live feed</div>
                 </div>
-                <h3>{latestLocation.device_id}</h3>
+                <h3 style={{
+                  background: 'linear-gradient(135deg, #ff8c00 0%, #ffbd4a 100%)',
+                  WebkitBackgroundClip: 'text',
+                  WebkitTextFillColor: 'transparent',
+                  backgroundClip: 'text',
+                  marginBottom: '16px'
+                }}>
+                  {latestLocation.device_id}
+                </h3>
                 <div className="info-grid">
-                  <div>
+                  <div className="tooltip-container">
                     <span className="label">Location</span>
                     <span>{latestLocation.lat.toFixed(6)}, {latestLocation.lon.toFixed(6)}</span>
+                    {showTooltips && (
+                      <span className="tooltip">Click to copy coordinates</span>
+                    )}
                   </div>
                   {latestLocation.speed !== null && (
                     <div>
                       <span className="label">Speed</span>
                       <span>{latestLocation.speed.toFixed(2)} m/s</span>
+                    </div>
+                  )}
+                  {latestLocation.battery !== null && (
+                    <div className="battery-indicator">
+                      <span className="label">Battery</span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span>{latestLocation.battery}%</span>
+                        <div className="battery-bar">
+                          <div
+                            className="battery-fill"
+                            style={{
+                              width: `${latestLocation.battery}%`,
+                              background: latestLocation.battery > 50
+                                ? 'linear-gradient(90deg, #22c55e, #16a34a)'
+                                : latestLocation.battery > 20
+                                  ? 'linear-gradient(90deg, #f59e0b, #d97706)'
+                                  : 'linear-gradient(90deg, #ef4444, #dc2626)'
+                            }}
+                          />
+                        </div>
+                      </div>
                     </div>
                   )}
                   <div>
@@ -576,6 +1034,12 @@ function App() {
                     <span className="label">Last update</span>
                     <span>{formatHHMMSS(lastUpdateEpoch ?? latestLocation.timestamp)}</span>
                   </div>
+                  {latestLocation.sos && (
+                    <div style={{ gridColumn: '1 / -1', background: 'rgba(239, 68, 68, 0.2)', borderColor: 'rgba(239, 68, 68, 0.4)' }}>
+                      <span className="label" style={{ color: '#ef4444' }}>Status</span>
+                      <span style={{ color: '#ef4444', fontWeight: 700 }}>⚠ SOS ACTIVE</span>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -583,122 +1047,132 @@ function App() {
             <div className="panel-section glass mini-trail">
               <div className="panel-head">
                 <h2>Recent trail</h2>
-                <small>Last {recentTrail.length} points</small>
-              </div>
-              {recentTrail.length === 0 && <p className="muted">No trail yet. Ingest data to see it live.</p>}
-              {recentTrail.map((p, idx) => (
-                <div key={`${p.lat}-${p.lon}-${idx}`} className="trail-row">
-                  <span className="dot" />
-                  <div>
-                    <div className="coords">{p.lat.toFixed(5)}, {p.lon.toFixed(5)}</div>
-                    <small>{p.ts ? formatHHMMSS(p.ts) : '--:--:--'}</small>
+                {recentTrail.length > 0 && (
+                  <div className="chip" style={{ fontSize: '10px', padding: '4px 8px' }}>
+                    {recentTrail.length} points
                   </div>
+                )}
+              </div>
+              {recentTrail.length === 0 && (
+                <div className="empty-state-trail">
+                  <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ opacity: 0.3, marginBottom: '12px' }}>
+                    <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
+                    <circle cx="12" cy="10" r="3" />
+                  </svg>
+                  <p className="muted" style={{ marginBottom: '4px', fontWeight: 500 }}>No trail data yet</p>
+                  <small className="muted">Track points will appear here as data is received</small>
                 </div>
-              ))}
+              )}
+              {recentTrail.length > 0 && (
+                <div style={{ maxHeight: '300px', overflowY: 'auto', paddingRight: '4px' }}>
+                  {recentTrail.map((p, idx) => (
+                    <div key={`${p.lat}-${p.lon}-${idx}`} className="trail-row" style={{ animationDelay: `${idx * 0.05}s` }}>
+                      <span className="dot" />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div className="coords">{p.lat.toFixed(5)}, {p.lon.toFixed(5)}</div>
+                        <small>{p.ts ? formatHHMMSS(p.ts) : '--:--:--'}</small>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
-            {error && <div className="panel-section glass error-box">{error}</div>}
+            {error && (
+              <div className="panel-section glass error-box" role="alert">
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ fontSize: '16px' }}>⚠️</span>
+                  <span>{error}</span>
+                </div>
+              </div>
+            )}
           </div>
         </aside>
-
-        <main className={`map-shell glass ${isMobile ? 'map-full' : ''}`} key={`${deviceId}-${mapStyle}`}>
-          <div className="map-overlay-top">
-            <div className="map-pill">
-              <span className="pulse-dot" /> Live ops map
-            </div>
-            {latestLocation && (
-              <div className="map-pill subtle">
-                <strong>{latestLocation.device_id}</strong> · {latestLocation.lat.toFixed(4)}, {latestLocation.lon.toFixed(4)}
-              </div>
-            )}
-          </div>
-
-          <MapContainer
-            whenCreated={(m) => {
-              mapRef.current = m;
-              // slight delay to allow layout/paint, then make leaflet recompute sizes
-              setTimeout(() => m.invalidateSize?.(), 60);
-            }}
-            center={mapCenter}
-            zoom={13}
-            zoomControl={true}
-            style={mapContainerStyle}
-            id="leaflet-main-map"
-          >
-            <TileLayer attribution="&copy; OpenStreetMap contributors" url={tileUrl} />
-
-            <ScaleControl position="bottomleft" />
-
-            {followTarget && latestLocation && <RecenterOnTarget lat={latestLocation.lat} lon={latestLocation.lon} />}
-
-            {showPath && polylineCoordinates.length > 1 && (
-              <Polyline
-                positions={polylineCoordinates}
-                pathOptions={{
-                  color: '#ff8c00',
-                  weight: 4,
-                  opacity: 0.9,
-                  smoothFactor: 1.5,
-                }}
-              />
-            )}
-
-            {latestLocation && (
-              <SmoothMarker position={[latestLocation.lat, latestLocation.lon]}>
-                <Popup className="custom-popup">
-                  <div className="popup-content">
-                    <strong>{latestLocation.device_id}</strong>
-                    <br />
-                    Lat: {latestLocation.lat.toFixed(6)}
-                    <br />
-                    Lon: {latestLocation.lon.toFixed(6)}
-                    {latestLocation.speed !== null && (
-                      <>
-                        <br />
-                        Speed: {latestLocation.speed.toFixed(2)} m/s
-                      </>
-                    )}
-                    {latestLocation.battery !== null && (
-                      <>
-                        <br />
-                        Battery: {latestLocation.battery}%
-                      </>
-                    )}
-                    {latestLocation.sos && (
-                      <>
-                        <br />
-                        <strong style={{ color: 'red' }}>⚠ SOS ACTIVE</strong>
-                      </>
-                    )}
-                    <br />
-                    <small>{formatHHMMSS(lastUpdateEpoch ?? latestLocation.timestamp)}</small>
-                  </div>
-                </Popup>
-              </SmoothMarker>
-            )}
-
-            {latestLocation && latestLocation.sos && (
-              <div className="sos-floating-card" aria-hidden>
-                <div className="sos-inner">
-                  <h3>⚠ SOS ACTIVE</h3>
-                  <p>
-                    Unit <strong>{latestLocation.device_id}</strong> reported SOS.
-                    <br />
-                    {latestLocation.lat.toFixed(6)}, {latestLocation.lon.toFixed(6)}
-                  </p>
-                </div>
-              </div>
-            )}
-          </MapContainer>
-        </main>
       </div>
 
-      {toastMessage && (
-        <div className="toast toast-success" aria-live="polite">
-          {toastMessage}
-        </div>
-      )}
-    </div>
+      {
+        toastMessage && (
+          <div className="toast toast-success" aria-live="polite">
+            {toastMessage}
+          </div>
+        )
+      }
+
+      {/* Help Modal */}
+      {
+        showHelp && (
+          <>
+            <div className="modal-backdrop" onClick={() => setShowHelp(false)} />
+            <div className="modal" role="dialog" aria-labelledby="help-title" aria-modal="true">
+              <div className="modal-header">
+                <h2 id="help-title">Keyboard Shortcuts</h2>
+                <button
+                  className="btn-icon"
+                  onClick={() => setShowHelp(false)}
+                  aria-label="Close help"
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M18 6L6 18M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+              <div className="modal-content">
+                <div className="shortcut-list">
+                  <div className="shortcut-item">
+                    <div className="shortcut-keys">
+                      <kbd className="kbd-key">Ctrl</kbd> + <kbd className="kbd-key">R</kbd>
+                    </div>
+                    <span className="shortcut-desc">Refresh data</span>
+                  </div>
+                  <div className="shortcut-item">
+                    <div className="shortcut-keys">
+                      <kbd className="kbd-key">Space</kbd>
+                    </div>
+                    <span className="shortcut-desc">Toggle auto-refresh</span>
+                  </div>
+                  <div className="shortcut-item">
+                    <div className="shortcut-keys">
+                      <kbd className="kbd-key">M</kbd>
+                    </div>
+                    <span className="shortcut-desc">Toggle map style</span>
+                  </div>
+                  <div className="shortcut-item">
+                    <div className="shortcut-keys">
+                      <kbd className="kbd-key">F</kbd>
+                    </div>
+                    <span className="shortcut-desc">Toggle follow target</span>
+                  </div>
+                  <div className="shortcut-item">
+                    <div className="shortcut-keys">
+                      <kbd className="kbd-key">P</kbd>
+                    </div>
+                    <span className="shortcut-desc">Toggle path display</span>
+                  </div>
+                  <div className="shortcut-item">
+                    <div className="shortcut-keys">
+                      <kbd className="kbd-key">Ctrl</kbd> + <kbd className="kbd-key">K</kbd>
+                    </div>
+                    <span className="shortcut-desc">Toggle drawer (mobile)</span>
+                  </div>
+                  <div className="shortcut-item">
+                    <div className="shortcut-keys">
+                      <kbd className="kbd-key">?</kbd>
+                    </div>
+                    <span className="shortcut-desc">Show this help</span>
+                  </div>
+                  <div className="shortcut-item">
+                    <div className="shortcut-keys">
+                      <kbd className="kbd-key">Esc</kbd>
+                    </div>
+                    <span className="shortcut-desc">Close modals/drawer</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </>
+        )
+      }
+    </div >
   );
 }
 
