@@ -608,16 +608,15 @@ input:focus {
 /* Map Overlay Pills (Top Left on underlying map) */
 .map-overlay-top {
   position: absolute;
-  top: 96px;
-  /* Below header */
+  top: 16px;
+  /* Adjusted for better visibility */
   right: 16px;
-  /* Right side now, to balance left controls */
   display: flex;
   flex-direction: column;
   gap: 8px;
-  z-index: 45;
+  z-index: 999;
+  /* Boost z-index to ensure visibility over map */
   align-items: flex-end;
-  /* Right align pills */
   pointer-events: none;
 }
 
